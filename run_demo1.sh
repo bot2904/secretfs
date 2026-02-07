@@ -12,9 +12,12 @@
 # Usage:
 #   ./run_demo1.sh          # build & mount
 #   cat /tmp/filtered/foo.txt   # (in another terminal) see placeholders
-#   fusermount3 -u /tmp/filtered  # unmount when done
+#   umount /tmp/filtered    # unmount when done
 #
 set -euo pipefail
+
+# ── Platform Detection ──────────────────────────────────────────────
+OS="$(uname -s)"
 
 # ── Colors ────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -34,12 +37,17 @@ echo -e "${CYAN}${BOLD}── secretfs demo ──${RESET}"
 echo
 
 # Check for FUSE
-if ! command -v fusermount3 &>/dev/null && ! command -v fusermount &>/dev/null; then
-    echo -e "${RED}✗ fusermount3 (or fusermount) not found.${RESET}"
-    echo -e "  Install FUSE first:  ${YELLOW}apt-get install fuse3${RESET}  (Debian/Ubuntu)"
-    exit 1
+if [[ "$OS" == "Darwin" ]]; then
+    # macOS uses macFUSE, usually doesn't have fusermount in PATH
+    echo -e "${GREEN}✓${RESET} macOS detected (assuming macFUSE is installed)"
+else
+    if ! command -v fusermount3 &>/dev/null && ! command -v fusermount &>/dev/null; then
+        echo -e "${RED}✗ fusermount3 (or fusermount) not found.${RESET}"
+        echo -e "  Install FUSE first:  ${YELLOW}apt-get install fuse3${RESET}  (Debian/Ubuntu)"
+        exit 1
+    fi
+    echo -e "${GREEN}✓${RESET} FUSE utilities found"
 fi
-echo -e "${GREEN}✓${RESET} FUSE utilities found"
 
 # Check for Rust toolchain
 if ! command -v cargo &>/dev/null; then
@@ -63,9 +71,20 @@ fi
 echo -e "${GREEN}✓${RESET} Source directory: ${CYAN}${SOURCE_DIR}${RESET}"
 
 # Make sure the mount point isn't already in use
-if mountpoint -q "$MOUNT_DIR" 2>/dev/null; then
+IS_MOUNTED=0
+if [[ "$OS" == "Darwin" ]]; then
+    if mount | grep -q "on $MOUNT_DIR "; then IS_MOUNTED=1; fi
+else
+    if mountpoint -q "$MOUNT_DIR" 2>/dev/null; then IS_MOUNTED=1; fi
+fi
+
+if [[ "$IS_MOUNTED" -eq 1 ]]; then
     echo -e "${YELLOW}⚠ ${MOUNT_DIR} is already mounted — unmounting first${RESET}"
-    fusermount3 -u "$MOUNT_DIR" 2>/dev/null || fusermount -u "$MOUNT_DIR" 2>/dev/null || umount "$MOUNT_DIR"
+    if [[ "$OS" == "Darwin" ]]; then
+        umount "$MOUNT_DIR"
+    else
+        fusermount3 -u "$MOUNT_DIR" 2>/dev/null || fusermount -u "$MOUNT_DIR" 2>/dev/null || umount "$MOUNT_DIR"
+    fi
 fi
 
 mkdir -p "$MOUNT_DIR"
@@ -89,7 +108,11 @@ echo -e "  ${CYAN}cat ${MOUNT_DIR}/foo.txt${RESET}          # see secrets replac
 echo -e "  ${CYAN}ls  ${MOUNT_DIR}/${RESET}"
 echo
 echo -e "${YELLOW}To unmount:${RESET}"
-echo -e "  ${CYAN}fusermount3 -u ${MOUNT_DIR}${RESET}       # or press Ctrl+C here"
+if [[ "$OS" == "Darwin" ]]; then
+    echo -e "  ${CYAN}umount ${MOUNT_DIR}${RESET}               # or press Ctrl+C here"
+else
+    echo -e "  ${CYAN}fusermount3 -u ${MOUNT_DIR}${RESET}       # or press Ctrl+C here"
+fi
 echo
 
 exec "$BINARY" --source "$SOURCE_DIR" --mount "$MOUNT_DIR" --config "$CONFIG"
