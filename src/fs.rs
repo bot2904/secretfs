@@ -229,7 +229,7 @@ impl Filesystem for SecretFs {
             let gid_val = gid.map(|g| g as libc::gid_t).unwrap_or(u32::MAX);
             unsafe {
                 if libc::chown(c_path.as_ptr(), uid_val, gid_val) != 0 {
-                    reply.error(*libc::__errno_location());
+                    reply.error(std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO));
                     return;
                 }
             }
