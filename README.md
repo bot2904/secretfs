@@ -1,147 +1,166 @@
 # secretfs
 
-A FUSE filesystem that transparently replaces secrets with placeholders.
+A FUSE filesystem that acts as a filtering proxy over a directory, transparently replacing secrets with stable placeholders on read and restoring them on write. Designed for safely mounting sensitive project directories into Docker containers or other untrusted environments.
 
-## Use Case
+## The Problem
 
-Mount a directory containing sensitive files into a Docker container (or any environment) where secrets should not be exposed. Any process reading files through the mount sees placeholders instead of real secrets. When files are written back, placeholders are automatically restored to the original secrets.
+You have a project directory containing configuration files, scripts, or documents with embedded secrets (API keys, passwords, tokens). You need to mount this directory into a Docker container — but you don't want the container to see the real secrets.
 
-## How It Works
+## How secretfs Solves It
+
+secretfs mounts between your real directory and the consumer. Every file read through the mount has secrets swapped out for placeholders. If the consumer writes files back, placeholders are restored to the originals before hitting disk.
 
 ```
-┌──────────────────────┐
-│  Application         │
-│  (reads/writes)      │
-│         │            │
-│    mount point       │
-│   /mnt/filtered/     │
-└────────┬─────────────┘
-         │ FUSE
-┌────────┴─────────────┐
-│   secretfs            │
-│                       │
-│  secrets.yaml         │
-│  → "AKIAIOS..." →    │
-│    <|SECRET:0001|>    │
-└────────┬─────────────┘
-         │ real I/O
-   /data/source/
+ your-app / docker container
+        │ reads files
+        │
+   /mnt/project/          ← mount point (filtered view)
+        │
+   ┌────┴─────────────┐
+   │    secretfs       │   secrets.yaml defines what to redact
+   │                   │   "AKIAIOS..." → <|SECRET:0001|>
+   │                   │   "ghp_Xf9..."  → <|SECRET:0002|>
+   └────┬─────────────┘
+        │
+   /data/project/          ← real files on disk (untouched)
 ```
 
-### Read Path
+Secrets and placeholders are mapped bidirectionally for the lifetime of the mount. The same secret always gets the same placeholder, so tools processing the files see consistent values.
 
-1. Application opens a file through the mount point
-2. secretfs reads the real file from the source directory
-3. All secrets (literal strings and regex matches) are replaced with stable placeholders like `<|SECRET:0001|>`
-4. The transformed content is served to the application
+## Quick Start
 
-### Write Path
-
-1. Application writes a file through the mount point
-2. secretfs replaces all placeholders back with their original secrets
-3. The restored content is written to the source file
-
-### Placeholder Format
-
-Placeholders use the format `<|SECRET:XXXX|>` where `XXXX` is a hex ID. If the original file already contains text matching this format, it is escaped to `<|ESCAPED_SECRET:XXXX|>` and restored on write-back.
-
-## Installation
+### 1. Build
 
 ```bash
-# Build from source
 cargo build --release
-
-# The binary is at target/release/secretfs
+# Binary: target/release/secretfs
 ```
 
-### Dependencies
+**Build dependencies:** Rust toolchain, `libfuse3-dev`, `pkg-config`
+**Runtime dependency:** `fuse3`
 
-- Linux with FUSE3 support
-- `libfuse3-dev` (build time, for the system FUSE library)
-- `fuse3` (runtime)
+On Debian/Ubuntu:
 
-## Usage
+```bash
+apt-get install libfuse3-dev fuse3 pkg-config
+```
 
-### 1. Create a secrets configuration file
+### 2. Create a Secrets Config
 
 ```yaml
 # secrets.yaml
 secrets:
-  # Literal strings to replace
+  # Exact strings to redact
   - literal: "AKIAIOSFODNN7EXAMPLE"
   - literal: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+  - literal: "super-secret-db-password"
 
-  # Regex patterns — matched dynamically
+  # Regex patterns — each unique match gets its own placeholder
   - pattern: "sk-[a-zA-Z0-9]{32,}"
   - pattern: "ghp_[a-zA-Z0-9]{36}"
 ```
 
-### 2. Mount
+See [`config.example.yaml`](config.example.yaml) for a full example.
+
+### 3. Mount
 
 ```bash
-# Create mount point
 mkdir -p /mnt/filtered
 
-# Mount source directory
-secretfs --source /data/real-files --mount /mnt/filtered --config secrets.yaml
+secretfs --source ./my-project --mount /mnt/filtered --config secrets.yaml
+```
 
-# In another terminal, files are now filtered:
-cat /mnt/filtered/config.env
-# → API_KEY=<|SECRET:0001|>
+In another terminal:
 
-# Unmount with Ctrl+C or:
+```bash
+$ cat /mnt/filtered/config.env
+AWS_ACCESS_KEY=<|SECRET:0001|>
+AWS_SECRET_KEY=<|SECRET:0002|>
+DB_PASSWORD=<|SECRET:0003|>
+```
+
+The real files in `./my-project/` are untouched.
+
+### 4. Unmount
+
+Press `Ctrl+C` in the secretfs terminal, or:
+
+```bash
 fusermount3 -u /mnt/filtered
 ```
 
-### 3. Docker Integration
+## Docker Integration
+
+The primary use case — mounting a filtered view into a container:
 
 ```bash
-# Mount filtered view into a Docker container
-secretfs --source ./project --mount /tmp/project-filtered --config secrets.yaml --allow-other &
+# Start secretfs in the background
+secretfs \
+  --source ./project \
+  --mount /tmp/project-filtered \
+  --config secrets.yaml \
+  --allow-other &
 
-docker run -v /tmp/project-filtered:/workspace myimage
+# Run a container with the filtered mount
+docker run --rm -v /tmp/project-filtered:/workspace myimage
+
+# Clean up
+fusermount3 -u /tmp/project-filtered
 ```
 
-Note: `--allow-other` requires `user_allow_other` in `/etc/fuse.conf`.
+> **Note:** `--allow-other` requires `user_allow_other` to be set in `/etc/fuse.conf`.
 
-## Configuration Reference
+## Configuration
 
-The config file is YAML with a top-level `secrets` list. Each entry is one of:
+The config file is YAML with a `secrets` list. Each entry is one of:
 
-| Type | Field | Description |
-|------|-------|-------------|
-| Literal | `literal` | Exact string to match and replace |
-| Pattern | `pattern` | Regex pattern; each unique match gets its own placeholder |
+| Type | Key | Description | Example |
+|------|-----|-------------|---------|
+| Literal | `literal` | Exact string match | `literal: "my-password"` |
+| Pattern | `pattern` | Regex; each unique match gets its own ID | `pattern: "sk-[a-zA-Z0-9]{32,}"` |
 
-### Matching Rules
+**Matching rules:**
 
-- Literal secrets are matched **longest first** to prevent partial matches
-- Regex patterns are matched greedily (longest match wins)
-- Mappings are **per-mount** and exist only in memory (not persisted)
-- Both text and binary files are processed (binary files: ASCII-range regions only)
+- Literal secrets are matched longest-first (so `"secret-long"` matches before `"secret"`)
+- Regex patterns are applied after literals; each distinct match is assigned a unique placeholder
+- Both text and binary files are processed (binary files: only ASCII-compatible regions)
+- If the original file already contains `<|SECRET:...|>`, it is escaped to `<|ESCAPED_SECRET:...|>` and restored on write-back
 
 ## CLI Reference
 
 ```
 secretfs --source <DIR> --mount <DIR> --config <FILE> [OPTIONS]
 
-Options:
+Arguments:
   -s, --source <DIR>     Source directory to mirror
   -m, --mount <DIR>      Mount point (must exist, should be empty)
   -c, --config <FILE>    Secrets config file (YAML)
+
+Options:
       --allow-other      Allow other users to access the mount
   -f, --foreground       Run in foreground (default: true)
   -h, --help             Print help
   -V, --version          Print version
+
+Environment:
+  RUST_LOG=debug         Enable debug logging (shows every FUSE operation)
 ```
 
 ## Limitations
 
-- File content is fully loaded into memory on open (not suitable for very large files)
-- Secret mappings are not persisted across remounts
-- No hot-reloading of secrets config
-- No `mmap` support
-- No extended attributes support
+- Files are fully loaded into memory on open (not suitable for multi-GB files)
+- Secret mappings live in memory only — they don't survive remounts
+- No hot-reloading of the secrets config
+- No `mmap` support (DIRECT_IO is used to bypass kernel page cache)
+- No extended attribute support
+
+See [`TODO.md`](TODO.md) for planned improvements.
+
+## Further Reading
+
+- [`DESIGN.md`](DESIGN.md) — architecture, design decisions, and internals
+- [`TODO.md`](TODO.md) — implemented features and future ideas
+- [`config.example.yaml`](config.example.yaml) — example secrets configuration
 
 ## License
 
