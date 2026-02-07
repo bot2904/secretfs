@@ -36,14 +36,26 @@ cargo build --release
 # Binary: target/release/secretfs
 ```
 
-**Build dependencies:** Rust toolchain, `libfuse3-dev`, `pkg-config`
-**Runtime dependency:** `fuse3`
+**Build dependencies:** Rust toolchain and a FUSE library (platform-specific, see below).
 
-On Debian/Ubuntu:
+#### Debian/Ubuntu
 
 ```bash
-apt-get install libfuse3-dev fuse3 pkg-config
+apt-get install libfuse3-dev fuse3 pkg-config build-essential
 ```
+
+#### macOS
+
+Install [macFUSE](https://osxfuse.github.io/) (requires allowing a kernel extension):
+
+```bash
+brew install --cask macfuse
+brew install pkg-config
+```
+
+After installation, open **System Settings → Privacy & Security** and allow the macFUSE kernel extension. A reboot is required.
+
+> **Note:** On Apple Silicon (M1/M2/M3/M4), you may need to [enable kernel extensions](https://support.apple.com/guide/mac-help/change-startup-disk-security-settings-mchl768f7291/mac) by booting into Recovery Mode and lowering the security policy.
 
 ### 2. Create a Secrets Config
 
@@ -86,7 +98,11 @@ The real files in `./my-project/` are untouched.
 Press `Ctrl+C` in the secretfs terminal, or:
 
 ```bash
+# Linux
 fusermount3 -u /mnt/filtered
+
+# macOS
+umount /mnt/filtered
 ```
 
 ## Docker Integration
@@ -105,10 +121,13 @@ secretfs \
 docker run --rm -v /tmp/project-filtered:/workspace myimage
 
 # Clean up
-fusermount3 -u /tmp/project-filtered
+fusermount3 -u /tmp/project-filtered   # Linux
+umount /tmp/project-filtered            # macOS
 ```
 
-> **Note:** `--allow-other` requires `user_allow_other` to be set in `/etc/fuse.conf`.
+> **Note:** `--allow-other` requires `user_allow_other` to be set in `/etc/fuse.conf` (Linux) or `/etc/fuse.conf` created with that option on macOS.
+
+> **macOS + Docker:** Docker Desktop for Mac runs in a Linux VM. FUSE mounts on the macOS host are not automatically visible inside the VM. You may need to share the mount point via Docker Desktop's file sharing settings, or run secretfs inside a Linux container instead.
 
 ## Configuration
 
