@@ -1,0 +1,10 @@
+# Example secrets configuration for secretfs
+secrets:
+  # Literal strings — exact match and replace
+  - literal: "AKIAIOSFODNN7EXAMPLE"
+  - literal: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+  - literal: "my-database-password-123"
+
+  # Regex patterns — dynamically match and assign placeholders
+  - pattern: "sk-[a-zA-Z0-9]{32,}"
+  - pattern: "ghp_[a-zA-Z0-9]{36}"
